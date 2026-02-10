@@ -1,125 +1,138 @@
 const API_URL = "http://127.0.0.1:5000";
 
-let solarChartInstance = null;
-let carbonChartInstance = null;
-
 document.addEventListener("DOMContentLoaded", () => {
-  loadSolarChart();
-  loadCarbonChart();
-  loadMapAndGreenZones();
-  loadRecommendations();
+    loadCharts();
+    initMap();
+    loadRecs();
 });
 
-// ---------------- SOLAR CHART ----------------
-function loadSolarChart() {
-  fetch(`${API_URL}/solar`)
-    .then(res => res.json())
-    .then(data => {
-      if (!data || data.length === 0) {
-        console.error("No solar data received");
-        return;
-      }
+// --- GLOBAL CHARTS ---
+function loadCharts() {
+    fetch(`${API_URL}/solar`).then(res => res.json()).then(data => {
+        if(data.length === 0) return;
+        new Chart(document.getElementById("solarChart"), {
+            type: "bar",
+            data: {
+                labels: data.map(d => d.building),
+                datasets: [{
+                    label: "Solar Potential (kWh)",
+                    data: data.map(d => d.predicted_energy_kwh),
+                    backgroundColor: "#f1c40f"
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+    });
 
-      const ctx = document.getElementById("solarChart");
-      if (!ctx) return;
+    fetch(`${API_URL}/carbon`).then(res => res.json()).then(data => {
+        if(data.length === 0) return;
+        new Chart(document.getElementById("carbonChart"), {
+            type: "line",
+            data: {
+                labels: data.map(d => d.building),
+                datasets: [{
+                    label: "Carbon Saved (kg)",
+                    data: data.map(d => d.carbon_saved_kg),
+                    borderColor: "#2ecc71",
+                    backgroundColor: "rgba(46, 204, 113, 0.1)",
+                    fill: true
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+    });
+}
 
-      if (solarChartInstance) solarChartInstance.destroy();
+// --- RECOMMENDATIONS ---
+function loadRecs() {
+    fetch(`${API_URL}/recommendations`).then(res => res.json()).then(data => {
+        const list = document.getElementById("rec-list");
+        list.innerHTML = "";
+        data.forEach(r => {
+            const li = document.createElement("li");
+            li.textContent = r;
+            list.appendChild(li);
+        });
+    });
+}
 
-      solarChartInstance = new Chart(ctx, {
-        type: "bar",
-        data: {
-          labels: data.map(d => d.building),
-          datasets: [{
-            label: "Predicted Solar Energy (kWh)",
-            data: data.map(d => Number(d.predicted_energy_kwh)),
-            backgroundColor: "#f1c40f"
-          }]
+// --- MAP & SMART GRID ---
+let map, drawnItems, gridLayer;
+
+function initMap() {
+    map = L.map('map').setView([23.078, 72.501], 18);
+    
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: 'Tiles &copy; Esri'
+    }).addTo(map);
+
+    drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+    gridLayer = L.layerGroup().addTo(map);
+
+    const drawControl = new L.Control.Draw({
+        draw: {
+            polyline: false, marker: false, circlemarker: false, circle: false,
+            polygon: { allowIntersection: false, showArea: true },
+            rectangle: { showArea: true }
         },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false
-        }
-      });
+        edit: { featureGroup: drawnItems, remove: true }
+    });
+    map.addControl(drawControl);
+
+    map.on(L.Draw.Event.CREATED, function (e) {
+        drawnItems.clearLayers();
+        drawnItems.addLayer(e.layer);
+        analyzeArea(e.layer.getBounds());
+    });
+
+    map.on(L.Draw.Event.DELETED, resetMap);
+}
+
+function analyzeArea(bounds) {
+    document.getElementById("loader").style.display = "flex";
+    
+    fetch(`${API_URL}/analyze_region`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            lat_min: bounds.getSouthWest().lat,
+            lat_max: bounds.getNorthEast().lat,
+            lon_min: bounds.getSouthWest().lng,
+            lon_max: bounds.getNorthEast().lng
+        })
     })
-    .catch(err => console.error("Solar chart error:", err));
-}
-
-// ---------------- CARBON CHART ----------------
-function loadCarbonChart() {
-  fetch(`${API_URL}/carbon`)
     .then(res => res.json())
     .then(data => {
-      if (!data || data.length === 0) {
-        console.error("No carbon data received");
-        return;
-      }
-
-      const ctx = document.getElementById("carbonChart");
-      if (!ctx) return;
-
-      if (carbonChartInstance) carbonChartInstance.destroy();
-
-      carbonChartInstance = new Chart(ctx, {
-        type: "bar",
-        data: {
-          labels: data.map(d => d.building),
-          datasets: [{
-            label: "Carbon Reduction (kg CO₂)",
-            data: data.map(d => Number(d.carbon_saved_kg)),
-            backgroundColor: "#2ecc71"
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false
-        }
-      });
-    })
-    .catch(err => console.error("Carbon chart error:", err));
-}
-
-// ---------------- MAP + GREEN ZONES ----------------
-function loadMapAndGreenZones() {
-  const map = L.map("map").setView([23.0225, 72.5714], 18);
-
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
-
-  fetch(`${API_URL}/solar`)
-    .then(res => res.json())
-    .then(data => {
-      data.forEach(b => {
-        if (b.lat && b.lon) {
-          L.marker([b.lat, b.lon])
-            .addTo(map)
-            .bindPopup(`${b.building}<br>Solar: ${b.predicted_energy_kwh} kWh`);
-        }
-      });
-    });
-
-  fetch(`${API_URL}/green-zones`)
-    .then(res => res.json())
-    .then(zones => {
-      zones.forEach(z => {
-        L.circleMarker([z.latitude, z.longitude], {
-          radius: 8,
-          color: "green",
-          fillOpacity: 0.6
-        }).addTo(map);
-      });
+        renderGrid(data.grid_points);
+        showStats(data.summary);
+        document.getElementById("loader").style.display = "none";
     });
 }
 
-// ---------------- RECOMMENDATIONS ----------------
-function loadRecommendations() {
-  fetch(`${API_URL}/recommendations`)
-    .then(res => res.json())
-    .then(data => {
-      const list = document.getElementById("recommendations");
-      list.innerHTML = "";
-      data.forEach(rec => {
-        const li = document.createElement("li");
-        li.textContent = rec;
-        list.appendChild(li);
-      });
+function renderGrid(points) {
+    gridLayer.clearLayers();
+    points.forEach(p => {
+        let color = '#3498db';
+        if(p.recommendation === 'SOLAR') color = '#f1c40f';
+        if(p.recommendation === 'TREE') color = '#2ecc71';
+        
+        L.circleMarker([p.lat, p.lon], {
+            color: color, fillColor: color, fillOpacity: 0.8, radius: 4, weight: 1
+        }).addTo(gridLayer);
     });
+}
+
+function showStats(summary) {
+    document.getElementById("analysis-panel").style.display = "block";
+    document.getElementById("main-suggestion").textContent = summary.main_rec; // SHOWS MAIN SUGGESTION
+    document.getElementById("zone-solar").textContent = summary.avg_solar;
+    document.getElementById("zone-trees").textContent = summary.tree_count;
+    document.getElementById("zone-score").textContent = summary.build_score;
+}
+
+function resetMap() {
+    drawnItems.clearLayers();
+    gridLayer.clearLayers();
+    document.getElementById("analysis-panel").style.display = "none";
 }
