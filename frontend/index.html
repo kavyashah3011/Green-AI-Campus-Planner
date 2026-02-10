@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Green AI Campus Planner</title>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>🌱 Green AI Campus Planner</h1>
+  <p>AI-powered sustainable campus planning dashboard</p>
+</header>
+
+<main>
+
+  <!-- CHARTS -->
+  <section class="dashboard">
+    <div class="card">
+      <h2>☀️ Solar Energy Prediction</h2>
+      <canvas id="solarChart"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>🌍 Carbon Emission Reduction</h2>
+      <canvas id="carbonChart"></canvas>
+    </div>
+  </section>
+
+  <!-- MAP -->
+  <section class="map-section">
+    <h2>📍 Campus GIS Map</h2>
+    <div id="map"></div>
+  </section>
+
+  <!-- RECOMMENDATIONS -->
+  <section class="recommend-section">
+    <h2>🧠 AI Planning Recommendations</h2>
+    <ul id="recommendations"></ul>
+  </section>
+
+</main>
+
+<footer>
+  <p>Green AI Campus Planner • Final Year Project</p>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>
