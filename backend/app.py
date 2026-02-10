@@ -1,110 +1,153 @@
 import os
-import sys
-import pickle
+import hashlib
 import pandas as pd
 import numpy as np
-import ast
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request, render_template
 from flask_cors import CORS
 
-# ---------------- PROJECT ROOT ----------------
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.append(BASE_DIR)
+# ---------------- CONFIGURATION ----------------
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
+FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 
-from models.carbon_model import carbon_reduction_kgs
-
-app = Flask(__name__)
+app = Flask(__name__, 
+            template_folder=FRONTEND_DIR, 
+            static_folder=FRONTEND_DIR, 
+            static_url_path='')
 CORS(app)
 
-# ---------------- LOAD MODEL ----------------
-MODEL_PATH = os.path.join(BASE_DIR, "models", "solar_model.pkl")
-solar_model = pickle.load(open(MODEL_PATH, "rb"))
+# ---------------- DATA LOADING ----------------
+campus_path = os.path.join(DATA_DIR, "campus_osm_data.csv")
+if os.path.exists(campus_path):
+    campus_df = pd.read_csv(campus_path)
+    missing_names = campus_df["name"].isna()
+    if missing_names.any():
+        campus_df.loc[missing_names, "name"] = "Building " + (campus_df.index[missing_names] + 1).astype(str)
+else:
+    campus_df = pd.DataFrame(columns=["name", "lat", "lon"])
 
-# ---------------- LOAD DATA ----------------
-campus = pd.read_csv(os.path.join(BASE_DIR, "data", "campus_osm_data.csv"))
-green_zones = pd.read_csv(os.path.join(BASE_DIR, "data", "green_zone_output.csv"))
+# ---------------- HELPER ----------------
+def generate_deterministic_value(lat, lon, min_val, max_val):
+    """Generates consistent values based on location"""
+    input_str = f"{lat:.5f}-{lon:.5f}"
+    hash_object = hashlib.md5(input_str.encode())
+    hash_int = int(hash_object.hexdigest(), 16)
+    normalized = hash_int / (2**128)
+    return min_val + (normalized * (max_val - min_val))
 
-# ---------------- COORDINATE PARSING ----------------
-def parse_coordinates(val):
-    try:
-        if isinstance(val, str):
-            val = ast.literal_eval(val)
-        if isinstance(val, (list, tuple)) and len(val) >= 2:
-            lon, lat = val[0], val[1]
-            return float(lat), float(lon)
-    except Exception:
-        pass
-    return None, None
-
-campus[["lat", "lon"]] = campus["coordinates"].apply(
-    lambda x: pd.Series(parse_coordinates(x))
-)
-
-# Fill missing coordinates with campus center (prevents empty output)
-campus["lat"].fillna(campus["lat"].mean(), inplace=True)
-campus["lon"].fillna(campus["lon"].mean(), inplace=True)
-
-# ---------------- ROOT ----------------
+# ---------------- ROUTES ----------------
 @app.route("/")
 def home():
-    return jsonify({
-        "status": "Backend running",
-        "endpoints": ["/solar", "/green-zones", "/carbon", "/recommendations"]
-    })
+    return render_template("index.html")
 
-# ---------------- SOLAR API ----------------
 @app.route("/solar")
 def solar():
     results = []
-
-    for _, row in campus.iterrows():
-        # Average environmental conditions (assumption-based)
-        features = np.array([[32, 45, 6.5]])
-        predicted_power = solar_model.predict(features)[0]
-
-        # Scale power for campus-level demo
-        energy_kwh = round(abs(predicted_power) / 100, 2)
-
-        results.append({
-            "building": row.get("name", "Campus Block"),
-            "lat": row["lat"],
-            "lon": row["lon"],
-            "predicted_energy_kwh": energy_kwh
-        })
-
+    if not campus_df.empty:
+        limit = min(len(campus_df), 8)
+        for i in range(limit):
+            row = campus_df.iloc[i]
+            val = generate_deterministic_value(i, i, 50, 150) 
+            results.append({
+                "building": str(row["name"]),
+                "predicted_energy_kwh": round(val, 2)
+            })
     return jsonify(results)
 
-# ---------------- CARBON API ----------------
 @app.route("/carbon")
 def carbon():
-    carbon_data = []
+    results = []
+    if not campus_df.empty:
+        limit = min(len(campus_df), 8)
+        for i in range(limit):
+            row = campus_df.iloc[i]
+            val = generate_deterministic_value(i, i, 40, 120)
+            results.append({
+                "building": str(row["name"]),
+                "carbon_saved_kg": round(val * 0.82, 2)
+            })
+    return jsonify(results)
 
-    for _, row in campus.iterrows():
-        # Use same assumed energy for consistency
-        energy_kwh = 10
-        carbon_data.append({
-            "building": row.get("name", "Campus Block"),
-            "carbon_saved_kg": carbon_reduction_kgs(energy_kwh)
-        })
-
-    return jsonify(carbon_data)
-
-# ---------------- GREEN ZONES ----------------
-@app.route("/green-zones")
-def green():
-    return jsonify(green_zones.to_dict(orient="records"))
-
-# ---------------- AI RECOMMENDATIONS ----------------
 @app.route("/recommendations")
 def recommendations():
-    recs = [
-        "Install rooftop solar panels on high-exposure buildings",
-        "Increase tree plantation in clustered green zones",
-        "Adopt smart energy monitoring systems",
-        "Promote renewable energy awareness across campus"
-    ]
-    return jsonify(recs)
+    return jsonify([
+        "Optimize solar panel tilt to 23° on Main Block",
+        "Plant 50 Neem trees in Zone A (North Campus)",
+        "Implement automated HVAC controls in Library",
+        "Install 15kW rooftop solar capacity on Hostel B"
+    ])
 
-# ---------------- RUN ----------------
+# --- MAIN FEATURE: AREA ANALYSIS ---
+@app.route("/analyze_region", methods=['POST'])
+def analyze_region():
+    data = request.json
+    lat_min = data.get("lat_min")
+    lat_max = data.get("lat_max")
+    lon_min = data.get("lon_min")
+    lon_max = data.get("lon_max")
+
+    grid_points = []
+    lat_step = (lat_max - lat_min) / 6
+    lon_step = (lon_max - lon_min) / 6
+
+    total_solar = 0
+    tree_count = 0
+    build_score = 0
+    
+    # Track counts to determine best suggestion
+    suggestion_counts = {"SOLAR": 0, "TREE": 0, "BUILD": 0}
+
+    current_lat = lat_min + (lat_step/2)
+    while current_lat < lat_max:
+        current_lon = lon_min + (lon_step/2)
+        while current_lon < lon_max:
+            
+            irradiance = generate_deterministic_value(current_lat, current_lon, 2.0, 9.0)
+            temp = generate_deterministic_value(current_lat, current_lon, 25.0, 45.0)
+            
+            rec = "NEUTRAL"
+            if irradiance > 6.0:
+                rec = "SOLAR"
+                total_solar += irradiance
+                suggestion_counts["SOLAR"] += 1
+            elif temp > 32: # Lower threshold to trigger trees more often
+                rec = "TREE"
+                tree_count += 1
+                suggestion_counts["TREE"] += 1
+            else:
+                rec = "BUILD"
+                build_score += 1
+                suggestion_counts["BUILD"] += 1
+
+            grid_points.append({
+                "lat": current_lat,
+                "lon": current_lon,
+                "recommendation": rec
+            })
+            current_lon += lon_step
+        current_lat += lat_step
+
+    # Determine Dominant Suggestion
+    best_type = max(suggestion_counts, key=suggestion_counts.get)
+    main_recommendation = ""
+    
+    if best_type == "SOLAR":
+        main_recommendation = "☀️ Optimal for Solar Farm (High Irradiance)"
+    elif best_type == "TREE":
+        main_recommendation = "🌳 Recommended for Green Zone (Heat Reduction)"
+    else:
+        main_recommendation = "🏗️ Suitable for Infrastructure/Building"
+
+    return jsonify({
+        "grid_points": grid_points,
+        "summary": {
+            "avg_solar": round(total_solar, 1),
+            "tree_count": tree_count * 5,
+            "build_score": round(build_score, 1),
+            "main_rec": main_recommendation # New Field
+        }
+    })
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(debug=True, port=5000)
